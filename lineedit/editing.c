@@ -203,7 +203,10 @@ static bool reset_completion;
 static bool next_reset_completion;
 
 /* Probability distribution tree for command prediction. */
-static trie_T *prediction_tree = NULL;
+#include "yh-predict.h"
+#include "yh-v4.h"
+#include "yh-v5-audit.h"
+static yh_v4_T *prediction_tree = NULL;
 
 
 static void reset_state(void);
@@ -387,7 +390,7 @@ wchar_t *le_editing_finalize(void)
     free(main_history_value);
 
     clear_prediction();
-    trie_destroy(prediction_tree), prediction_tree = NULL;
+    yh_v4_destroy(prediction_tree), prediction_tree = NULL;
     wb_wccat(&le_main_buffer, L'\n');
     return wb_towcs(&le_main_buffer);
 }
@@ -2513,7 +2516,9 @@ void check_reset_completion(void)
  * current history. The result is set to `prediction_tree'. */
 void create_prediction_tree(void)
 {
-    trie_T *t = trie_create();
+    YH_HIST_SCOPE;
+
+    yh_v4_T *t = yh_v4_create();
 #define N 4
     size_t hits[N] = {0};
     for (const histlink_T *l = Histlist; (l = l->prev) != Histlist; ) {
@@ -2525,19 +2530,22 @@ void create_prediction_tree(void)
         if (hits[0] >= MAX_PREDICTION_SAMPLE)
             break;
 
-        wchar_t *cmd = malloc_mbstowcs(e->value);
+        wchar_t *cmd = malloc_mbstowcs(yh_hist_value(e));
         if (cmd == NULL)
             continue;
-        t = trie_add_probability(t, cmd, 1.0 / (hits[k] + 1));
+        t = yh_v4_add(t, cmd, 1.0 / (hits[k] + 1));
         free(cmd);
     }
 
-    prediction_tree = t;
+    prediction_tree = yh_v4_finish(t);
+    yh_v5_audit(prediction_tree);
 }
 
 // Counts N-1 at most
 size_t count_matching_previous_commands(const histentry_T *e)
 {
+    YH_HIST_SCOPE;
+
     size_t count = 0;
     const histlink_T *l1 = &e->link, *l2 = Histlist;
     while ((l1 = l1->prev) != Histlist) {
@@ -2545,7 +2553,7 @@ size_t count_matching_previous_commands(const histentry_T *e)
 
         const histentry_T *e1 = (const histentry_T *) l1;
         const histentry_T *e2 = (const histentry_T *) l2;
-        if (strcmp(e1->value, e2->value) != 0)
+        if (strcmp(yh_hist_value(e1), yh_hist_value(e2)) != 0)
             break;
         count++;
         if (count >= N - 1)
@@ -2583,7 +2591,7 @@ void update_buffer_with_prediction(void)
 
     le_main_length = le_main_buffer.length;
 
-    wchar_t *suffix = trie_probable_key(
+    wchar_t *suffix = yh_v4_predict(
             prediction_tree, le_main_buffer.contents);
     wb_catfree(&le_main_buffer, suffix);
 }
@@ -2760,6 +2768,8 @@ void cmd_vi_substitute(wchar_t c __attribute__((unused)))
  * The mode is changed to vi-insert. */
 void cmd_vi_append_last_bigword(wchar_t c __attribute__((unused)))
 {
+    YH_HIST_SCOPE;
+
     ALERT_AND_RETURN_IF_PENDING;
     save_current_edit_command();
     maybe_save_undo_history();
@@ -2770,7 +2780,7 @@ void cmd_vi_append_last_bigword(wchar_t c __attribute__((unused)))
         goto fail;
 
     struct xwcsrange range;
-    lastcmd = malloc_mbstowcs(ashistentry(histlist.Newest)->value);
+    lastcmd = malloc_mbstowcs(yh_hist_value(ashistentry(histlist.Newest)));
     if (lastcmd == NULL)
         goto fail;
     if (count >= 0) {
@@ -3523,6 +3533,8 @@ alert:
  *  SEARCH_EMACS:  the end of the buffer */
 void go_to_history(const histlink_T *l, enum le_search_type_T curpos)
 {
+    YH_HIST_SCOPE;
+
     maybe_save_undo_history();
     clear_prediction();
 
@@ -3535,7 +3547,7 @@ void go_to_history(const histlink_T *l, enum le_search_type_T curpos)
         le_main_index = h->index;
     } else {
         if (l != Histlist)
-            wb_mbscat(&le_main_buffer, ashistentry(l)->value);
+            wb_mbscat(&le_main_buffer, yh_hist_value(ashistentry(l)));
         switch (curpos) {
             case SEARCH_PREFIX:
                 if (le_main_index > le_main_buffer.length)
@@ -3728,6 +3740,8 @@ done:
 void perform_search(const wchar_t *pattern,
         enum le_search_direction_T dir, enum le_search_type_T type)
 {
+    YH_HIST_SCOPE;
+
     const histlink_T *l = main_history_entry;
     xfnmatch_T *xfnm;
 
@@ -3775,7 +3789,7 @@ void perform_search(const wchar_t *pattern,
         }
         if (l == Histlist)
             break;
-        if (xfnm_match(xfnm, ashistentry(l)->value) == 0)
+        if (xfnm_match(xfnm, yh_hist_value(ashistentry(l))) == 0)
             break;
     }
     xfnm_free(xfnm);
