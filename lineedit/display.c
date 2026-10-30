@@ -41,6 +41,7 @@
 #include "complete.h"
 #include "editing.h"
 #include "terminfo.h"
+#include "yh-highlight.h"
 
 
 /* Characters displayed on the screen by line-editing are divided into three
@@ -665,30 +666,14 @@ void maybe_print_promptsp(void)
  * The cursor is left at an unspecified position when this function returns. */
 void update_editline(void)
 {
+    /* A later edit can change the style of earlier characters. */
+    if (current_editline != NULL && current_length == le_main_length &&
+            wcscmp(current_editline, le_main_buffer.contents) == 0)
+        return;
+
+    go_to(editbasepos);
+    clear_editline();
     size_t index = 0;
-
-    if (current_editline != NULL) {
-        /* We only reprint what have been changed from the last update:
-         * skip the unchanged part at the beginning of the line. */
-        assert(cursor_positions != NULL);
-
-        while (current_editline[index] != L'\0' &&
-                current_display_is_uptodate(index))
-            index++;
-
-        /* return if nothing has changed */
-        if (current_editline[index] == L'\0'
-                && le_main_buffer.contents[index] == L'\0')
-            return;
-
-        go_to_index(index);
-        if (current_editline[index] != L'\0')
-            clear_editline();
-    } else {
-        /* print the whole edit line */
-        go_to(editbasepos);
-        clear_editline();
-    }
 
     update_styler();
 
@@ -698,6 +683,21 @@ void update_editline(void)
             le_main_buffer.length + 1, sizeof *current_editline);
     cursor_positions = xreallocn(cursor_positions,
             le_main_buffer.length + 1, sizeof *cursor_positions);
+    static const wchar_t *const yh_fonts[] = {
+        L"\\fD.", L"\\fD.\\fg.", L"\\fD.\\fy.", L"\\fD.\\fy.",
+        L"\\fD.\\fc.", L"\\fD.\\fm.", L"\\fD.\\fkt.", L"\\fD.\\fro."
+    };
+    size_t yh_typed = le_main_length;
+    if (yh_typed > le_main_buffer.length)
+        yh_typed = le_main_buffer.length;
+    if (yh_typed > (size_t) PTRDIFF_MAX)
+        alloc_failed();
+    unsigned char yh_local[256];
+    unsigned char *yh_colors = yh_typed <= sizeof yh_local
+        ? yh_local : xmallocn(yh_typed, sizeof *yh_colors);
+    yh_scan(le_main_buffer.contents, yh_typed, yh_colors);
+    unsigned char yh_previous = 255;
+
     for (;;) {
         wchar_t c = le_main_buffer.contents[index];
         current_editline[index] = c;
@@ -705,13 +705,25 @@ void update_editline(void)
             = lebuf.pos.line * lebuf.maxcolumn + lebuf.pos.column;
         if (index == le_main_buffer.length)
             break;
-        if (styler_active && index >= le_main_length) {
-            lebuf_print_sgr0(), styler_active = false;
+        if (index < yh_typed) {
+            unsigned char style = yh_colors[index];
+            if (style != yh_previous) {
+                lebuf_print_sgr0();
+                lebuf_print_prompt(yh_fonts[style]);
+                styler_active = true;
+                yh_previous = style;
+            }
+        } else if (index == yh_typed) {
+            lebuf_print_sgr0();
+            styler_active = false;
             lebuf_print_prompt(prompt.predict);
         }
         lebuf_putwchar(c, true);
         index++;
     }
+
+    if (yh_colors != yh_local)
+        free(yh_colors);
 
     current_length = le_main_length;
 
