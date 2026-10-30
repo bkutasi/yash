@@ -326,6 +326,7 @@ static void go_to_history(const histlink_T *l, enum le_search_type_T curpos)
 
 static bool need_update_last_search_value(void)
     __attribute__((pure));
+static bool search_result_is_valid(void);
 static void update_search(void);
 static void perform_search(const wchar_t *pattern,
         enum le_search_direction_T dir, enum le_search_type_T type)
@@ -904,7 +905,7 @@ void cmd_accept_line(wchar_t c __attribute__((unused)))
         le_editstate = LE_EDITSTATE_DONE;
         reset_state();
     } else {
-        if (le_search_result != Histlist)
+        if (search_result_is_valid())
             le_editstate = LE_EDITSTATE_DONE;
         cmd_srch_accept_search(L'\0');
     }
@@ -3568,6 +3569,41 @@ void go_to_history(const histlink_T *l, enum le_search_type_T curpos)
 
 /***** History Search Commands *****/
 
+/* Return the value that history navigation would restore for an emacs search.
+ * The result is independently allocated; history storage is scoped. */
+wchar_t *le_search_result_value(const histlink_T *entry)
+{
+    YH_HIST_SCOPE;
+
+    size_t len = active_length();
+    bool will_replace_undo = undo_history_entry != main_history_entry &&
+        (wcsncmp(le_main_buffer.contents, main_history_value, len) != 0 ||
+         main_history_value[len] != L'\0');
+    if (!will_replace_undo && entry == undo_history_entry &&
+            undo_index < undo_history.length) {
+        const struct undo_history *saved = undo_history.contents[undo_index];
+        return xwcsdup(saved->contents);
+    }
+    return malloc_mbstowcs(yh_hist_value(ashistentry(entry)));
+}
+
+/* A locale-changing trap may invalidate a result after it was found. */
+bool search_result_is_valid(void)
+{
+    if (le_search_result == Histlist)
+        return false;
+    if (le_search_type != SEARCH_EMACS)
+        return true;
+    if (le_search_buffer.contents == NULL || le_search_buffer.length == 0)
+        return false;
+
+    wchar_t *value = le_search_result_value(le_search_result);
+    bool matched = value != NULL &&
+        wcsstr(value, le_search_buffer.contents) != NULL;
+    free(value);
+    return matched;
+}
+
 /* Appends the argument character to the search buffer. */
 void cmd_srch_self_insert(wchar_t c)
 {
@@ -3630,7 +3666,7 @@ void cmd_srch_continue_forward(wchar_t c __attribute__((unused)))
     }
 
     le_search_direction = FORWARD;
-    if (le_search_result != Histlist)
+    if (search_result_is_valid())
         go_to_history(le_search_result, le_search_type);
     update_search();
 }
@@ -3646,7 +3682,7 @@ void cmd_srch_continue_backward(wchar_t c __attribute__((unused)))
     }
 
     le_search_direction = BACKWARD;
-    if (le_search_result != Histlist)
+    if (search_result_is_valid())
         go_to_history(le_search_result, le_search_type);
     update_search();
 }
@@ -3658,6 +3694,8 @@ void cmd_srch_accept_search(wchar_t c __attribute__((unused)))
     if (le_search_buffer.contents == NULL)
         return;
 
+    bool matched = search_result_is_valid();
+    bool search_nonempty = le_search_buffer.length != 0;
     last_search.direction = le_search_direction;
     last_search.type = le_search_type;
     if (need_update_last_search_value()) {
@@ -3668,10 +3706,20 @@ void cmd_srch_accept_search(wchar_t c __attribute__((unused)))
     }
     le_search_buffer.contents = NULL;
     le_set_mode(savemode);
-    if (le_search_result == Histlist) {
+    if (!matched) {
+        le_search_result = Histlist;
         cmd_alert(L'\0');
     } else {
         go_to_history(le_search_result, le_search_type);
+        if (le_search_type == SEARCH_EMACS && search_nonempty &&
+                last_search.value != NULL) {
+            /* Locate the match in the same edited text that was displayed. */
+            const wchar_t *match =
+                wcsstr(le_main_buffer.contents, last_search.value);
+            if (match != NULL)
+                undo_save_index = le_main_index =
+                    (size_t) (match - le_main_buffer.contents);
+        }
     }
     reset_state();
 }
@@ -3789,8 +3837,16 @@ void perform_search(const wchar_t *pattern,
         }
         if (l == Histlist)
             break;
-        if (xfnm_match(xfnm, yh_hist_value(ashistentry(l))) == 0)
+        if (type == SEARCH_EMACS) {
+            wchar_t *value = le_search_result_value(l);
+            bool matched = value != NULL &&
+                xfnm_wmatch(xfnm, value).start != (size_t) -1;
+            free(value);
+            if (matched)
+                break;
+        } else if (xfnm_match(xfnm, yh_hist_value(ashistentry(l))) == 0) {
             break;
+        }
     }
     xfnm_free(xfnm);
 done:

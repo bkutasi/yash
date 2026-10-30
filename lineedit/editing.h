@@ -37,6 +37,8 @@ extern enum le_search_type_T le_search_type;
 extern xwcsbuf_T le_search_buffer;
 extern const struct histlink_T *le_search_result;
 
+extern wchar_t *le_search_result_value(const struct histlink_T *entry)
+    __attribute__((malloc,warn_unused_result,nonnull));
 extern void le_editing_init(void);
 extern wchar_t *le_editing_finalize(void)
     __attribute__((malloc,warn_unused_result));
