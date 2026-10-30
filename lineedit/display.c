@@ -347,6 +347,11 @@ static void update_styler(void);
 static void reset_style_before_moving(void);
 static void update_right_prompt(void);
 static void print_search(void);
+static void search_rebase_display(void);
+static bool print_search_field(const wchar_t *value, const wchar_t *cursor,
+        size_t maxcells, le_pos_T *cursor_position);
+static size_t search_char_width(wchar_t c);
+static le_pos_T position_before(wchar_t c);
 static void go_to(le_pos_T p);
 static void go_to_index(size_t index);
 static void go_to_after_editline(void);
@@ -401,6 +406,8 @@ static wchar_t *current_editline = NULL;
  * If the nth character of `current_editline' is positioned at line `l', column
  * `c', then cursor_positions[n] == l * le_columns + c. */
 static int *cursor_positions = NULL;
+/* Long edit lines are displayed as a horizontal window around the cursor. */
+static bool editline_clipped;
 /* The current index in the edit line that divides the line into two (cf.
  * `le_main_buffer'). */
 static size_t current_length = 0;
@@ -581,6 +588,12 @@ void clear_editline(void)
  * its contents to be actually displayed. */
 void le_display_update(bool cursor)
 {
+    if (display_active && rprompt.value == NULL &&
+            le_search_buffer.contents == NULL) {
+        lebuf_init(current_position);
+        go_to(editbasepos);
+        finish();
+    }
     if (display_active) {
         lebuf_init(current_position);
     } else {
@@ -666,8 +679,18 @@ void maybe_print_promptsp(void)
  * The cursor is left at an unspecified position when this function returns. */
 void update_editline(void)
 {
-    /* A later edit can change the style of earlier characters. */
-    if (current_editline != NULL && current_length == le_main_length &&
+    bool was_clipped = editline_clipped;
+    size_t screen_cells = le_lines > 0 && le_columns > 0
+        ? (size_t) le_lines * (size_t) le_columns : SIZE_MAX;
+    size_t cells = (size_t) editbasepos.column;
+    for (size_t i = 0; i < le_main_buffer.length && cells < screen_cells; i++) {
+        size_t width = search_char_width(le_main_buffer.contents[i]);
+        cells = width >= screen_cells - cells ? screen_cells : cells + width;
+    }
+    editline_clipped = cells >= screen_cells && le_columns > editbasepos.column + 1;
+    /* A later edit can change earlier styles, so redraw the whole line. */
+    if (!editline_clipped && !was_clipped && current_editline != NULL &&
+            current_length == le_main_length &&
             wcscmp(current_editline, le_main_buffer.contents) == 0)
         return;
 
@@ -692,19 +715,51 @@ void update_editline(void)
         yh_typed = le_main_buffer.length;
     if (yh_typed > (size_t) PTRDIFF_MAX)
         alloc_failed();
+    /* Use stack storage for short lines and preserve colouring for long ones. */
     unsigned char yh_local[256];
     unsigned char *yh_colors = yh_typed <= sizeof yh_local
         ? yh_local : xmallocn(yh_typed, sizeof *yh_colors);
     yh_scan(le_main_buffer.contents, yh_typed, yh_colors);
     unsigned char yh_previous = 255;
 
+    size_t start = 0, used = 0;
+    bool window_full = false;
+    size_t available = editline_clipped
+        ? (size_t) (le_columns - editbasepos.column - 1) : SIZE_MAX;
+    if (editline_clipped) {
+        size_t before = 0;
+        size_t cursor_width = le_main_index < le_main_buffer.length
+            ? search_char_width(le_main_buffer.contents[le_main_index]) : 0;
+        if (cursor_width > available)
+            cursor_width = 1;
+        for (size_t i = 0; i < le_main_index; i++) {
+            before += search_char_width(le_main_buffer.contents[i]);
+            while (start <= i && before + cursor_width > available)
+                before -= search_char_width(le_main_buffer.contents[start++]);
+        }
+    }
     for (;;) {
         wchar_t c = le_main_buffer.contents[index];
+        le_pos_T position = position_before(c);
         current_editline[index] = c;
         cursor_positions[index]
-            = lebuf.pos.line * lebuf.maxcolumn + lebuf.pos.column;
+            = position.line * lebuf.maxcolumn + position.column;
         if (index == le_main_buffer.length)
             break;
+        if (editline_clipped && index < start) {
+            index++;
+            continue;
+        }
+        size_t width = search_char_width(c);
+        bool substitute = editline_clipped && index == le_main_index &&
+            width > available;
+        if (substitute)
+            width = 1;
+        if (editline_clipped && (window_full || width > available - used)) {
+            window_full = true;
+            index++;
+            continue;
+        }
         if (index < yh_typed) {
             unsigned char style = yh_colors[index];
             if (style != yh_previous) {
@@ -718,7 +773,8 @@ void update_editline(void)
             styler_active = false;
             lebuf_print_prompt(prompt.predict);
         }
-        lebuf_putwchar(c, true);
+        lebuf_putwchar(substitute ? L'?' : c, true);
+        used += width;
         index++;
     }
 
@@ -794,6 +850,8 @@ void reset_style_before_moving(void)
 void update_right_prompt(void)
 {
     int trim = (int)shopt_le_trimright;
+    if (editline_clipped)
+        return;
     if (rprompt_line >= 0)
         return;
     if (rprompt.width == 0)
@@ -820,23 +878,129 @@ void update_right_prompt(void)
 /* Prints the current search result and the search line.
  * The cursor may be anywhere when this function is called.
  * Characters after the prompt are cleared in this function.
- * When this function returns, the cursor is left after the search line. */
+ * In emacs search, the cursor is left at the match when there is one;
+ * otherwise, it is left after the search line. */
 void print_search(void)
 {
     YH_HIST_SCOPE;
+    le_pos_T match_position = editbasepos;
+    bool has_match_position = false;
+    const char *text = NULL;
+    wchar_t *value = NULL;
+    const wchar_t *match = NULL;
+    size_t value_cells = 0, query_cells = 0, label_cells = 0;
 
     assert(le_search_buffer.contents != NULL);
 
     free(current_editline), current_editline = NULL;
     free(cursor_positions), cursor_positions = NULL;
 
+    if (le_search_type == SEARCH_EMACS) {
+        switch (le_search_direction) {
+            case FORWARD:   text = "Forward search: ";   break;
+            case BACKWARD:  text = "Backward search: ";  break;
+            default:        UNREACHABLE();
+        }
+        if (le_search_result != Histlist) {
+            value = le_search_result_value(le_search_result);
+            if (value != NULL && le_search_buffer.length != 0)
+                match = wcsstr(value, le_search_buffer.contents);
+        }
+        if (value != NULL)
+            for (const wchar_t *p = value; *p != L'\0'; p++)
+                value_cells += search_char_width(*p);
+        for (const wchar_t *p = le_search_buffer.contents; *p != L'\0'; p++)
+            query_cells += search_char_width(*p);
+        wchar_t *label = malloc_mbstowcs(gt(text));
+        if (label != NULL) {
+            for (const wchar_t *p = label; *p != L'\0'; p++)
+                label_cells += search_char_width(*p);
+            free(label);
+        }
+    }
+
+    /* If the full result and query cannot fit on the screen together, use
+     * single-line viewports.  This also avoids cursor moves into scrollback. */
+    if (le_search_type == SEARCH_EMACS && le_columns > 0 &&
+            (last_edit_line - editbasepos.line >= le_lines - 1 ||
+             (label_cells + query_cells) % (size_t) le_columns == 0 ||
+             (label_cells + query_cells) / (size_t) le_columns +
+             (value_cells + (size_t) editbasepos.column) /
+                 (size_t) le_columns + 1 >= (size_t) le_lines)) {
+        bool already_compact = rprompt.value == NULL;
+        if (value != NULL && match == NULL) {
+            /* An invalid result is shown as an empty result. */
+            free(value);
+            value = NULL;
+        }
+        if (!already_compact) {
+            search_rebase_display();
+        } else {
+            go_to(editbasepos);
+            clear_editline();
+        }
+
+        if (value != NULL)
+            has_match_position = print_search_field(value, match,
+                    (size_t) le_columns - 1, &match_position);
+        if (le_lines >= 2)
+            lebuf_print_nel();
+        /* A one-row terminal has room for the match or query, not both. */
+        if (le_lines >= 2 || !has_match_position) {
+            wchar_t *label = malloc_mbstowcs(gt(text));
+            if (label != NULL) {
+                size_t available = (size_t) le_columns - 1;
+                size_t label_room = label_cells < available ? label_cells :
+                    (query_cells < available ? available - query_cells : 0);
+                print_search_field(label, label,
+                        label_room, NULL);
+                free(label);
+            }
+            print_search_field(le_search_buffer.contents,
+                    &le_search_buffer.contents[le_search_buffer.length],
+                    lebuf.pos.column < le_columns - 1
+                        ? (size_t) (le_columns - 1 - lebuf.pos.column) : 0,
+                    NULL);
+        }
+        fillip_cursor();
+        last_edit_line = lebuf.pos.line;
+        if (has_match_position)
+            go_to(match_position);
+        free(value);
+        return;
+    }
+
+    if (rprompt.value == NULL) {
+        go_to(editbasepos);
+        finish();
+        le_display_update(true);
+        free(value);
+        return;
+    }
+
     go_to(editbasepos);
     clear_editline();
 
     update_styler();
 
-    if (le_search_result != Histlist)
-        lebuf_wprintf(true, L"%s", yh_hist_value(ashistentry(le_search_result)));
+    if (le_search_result != Histlist) {
+        if (le_search_type == SEARCH_EMACS) {
+            if (match != NULL) {
+                for (const wchar_t *p = value; *p != L'\0'; p++) {
+                    if (p == match) {
+                        match_position = position_before(*p);
+                        has_match_position = true;
+                    }
+                    lebuf_putwchar(*p, true);
+                }
+            }
+            /* A locale change can make the result unprintable; leave the
+             * search state alone and keep the cursor on the search line. */
+        } else {
+            lebuf_wprintf(true, L"%s",
+                    yh_hist_value(ashistentry(le_search_result)));
+        }
+    }
     reset_style_before_moving();
     lebuf_print_nel();
     clear_to_end_of_screen(), candbaseline = -1;
@@ -844,7 +1008,6 @@ void print_search(void)
     update_styler();
 
     switch (le_search_type) {
-        const char *text;
         case SEARCH_PREFIX:
             UNREACHABLE();
         case SEARCH_VI:
@@ -855,11 +1018,6 @@ void print_search(void)
             }
             break;
         case SEARCH_EMACS:
-            switch (le_search_direction) {
-                case FORWARD:   text = "Forward search: ";   break;
-                case BACKWARD:  text = "Backward search: ";  break;
-                default:        UNREACHABLE();
-            }
             lebuf_wprintf(false, L"%s", gt(text));
             break;
     }
@@ -867,6 +1025,104 @@ void print_search(void)
 
     fillip_cursor();
     last_edit_line = lebuf.pos.line;
+    if (has_match_position)
+        go_to(match_position);
+    free(value);
+}
+
+/* A long edit line may already have scrolled the original prompt away. */
+void search_rebase_display(void)
+{
+    lebuf_print_sgr0();
+    go_to((le_pos_T) { 0, 0 });
+    finish();
+
+    display_active = true;
+    last_edit_line = line_max = 0;
+    candhighlight = NOHIGHLIGHT, candbaseline = -1, candoverwritten = false;
+    rprompt.value = NULL;  /* Marks the compact search display. */
+    rprompt.length = 0;
+    rprompt.width = 0;
+    sprompt.value = NULL;
+    sprompt.length = 0;
+    rprompt_line = -1;
+    styler_active = false;
+    lebuf_init((le_pos_T) { 0, 0 });
+    editbasepos = (le_pos_T) { 0, 0 };
+}
+
+/* Width of the representation used by lebuf_putwchar(c, true). */
+size_t search_char_width(wchar_t c)
+{
+    int width = wcwidth(c);
+    if (width > 0)
+        return (size_t) width;
+    if (c < L'\040' || c == L'\177')
+        return 2;
+    uintmax_t n = (uintmax_t) c;
+    size_t digits = 1;
+    while ((n >>= 4) != 0)
+        digits++;
+    return digits + 2;
+}
+
+/* Print a bounded window around cursor without ever reaching the last cell. */
+bool print_search_field(const wchar_t *value, const wchar_t *cursor,
+        size_t maxcells, le_pos_T *cursor_position)
+{
+    const wchar_t *start = value;
+    size_t before = 0;
+    for (const wchar_t *p = value; p < cursor; p++) {
+        size_t width = search_char_width(*p);
+        before += width;
+        while (before > maxcells && start <= p)
+            before -= search_char_width(*start++);
+    }
+    size_t cursor_width = 0;
+    if (*cursor != L'\0') {
+        size_t width = search_char_width(*cursor);
+        cursor_width = width;
+        if (width > maxcells) {
+            /* Even an escaped control character must remain addressable. */
+            if (cursor_position != NULL)
+                *cursor_position = lebuf.pos;
+            if (maxcells > 0)
+                lebuf_putwchar(L'?', false);
+            return maxcells > 0;
+        }
+        while (before + width > maxcells && start < cursor)
+            before -= search_char_width(*start++);
+    }
+
+    size_t used = 0;
+    bool placed = false;
+    for (const wchar_t *p = start; *p != L'\0'; p++) {
+        size_t width = search_char_width(*p);
+        if (p == cursor && cursor_position != NULL) {
+            *cursor_position = lebuf.pos;
+            placed = true;
+        }
+        if (used + width > maxcells)
+            break;
+        lebuf_putwchar(*p, true);
+        used += width;
+    }
+    if (!placed && cursor_position != NULL)
+        *cursor_position = lebuf.pos;
+    return placed || (cursor_width == 0 && before <= maxcells);
+}
+
+/* Position of a character after any pending or wide-character line wrap. */
+le_pos_T position_before(wchar_t c)
+{
+    le_pos_T p = lebuf.pos;
+    int width = wcwidth(c);
+    if (p.column >= lebuf.maxcolumn ||
+            (width > 0 && p.column + width > lebuf.maxcolumn)) {
+        p.line++;
+        p.column = 0;
+    }
+    return p;
 }
 
 /* Moves the cursor to the specified position.

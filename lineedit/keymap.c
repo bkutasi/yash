@@ -29,6 +29,7 @@
 #include "../builtin.h"
 #include "../exec.h"
 #include "../expand.h"
+#include "../history.h"
 #include "../util.h"
 #include "../xfnmatch.h"
 #include "complete.h"
@@ -52,6 +53,22 @@ static const struct command_name_pair {
 } commands[] = {
 #include "commands.in"
 };
+
+/* Accept a search result and move left into the recalled command. */
+static void accept_search_left(wchar_t c)
+{
+    cmd_srch_accept_search(c);
+    if (le_search_result != Histlist)
+        cmd_backward_char(c);
+}
+
+/* Accept a search result and move right into the recalled command. */
+static void accept_search_right(wchar_t c)
+{
+    cmd_srch_accept_search(c);
+    if (le_search_result != Histlist)
+        cmd_forward_char(c);
+}
 
 
 /* Initializes `le_modes' if not yet initialized.
@@ -321,6 +338,8 @@ void le_keymap_init(void)
     Set(Key_c_j,       cmd_srch_accept_search);
     Set(Key_escape,    cmd_srch_accept_search);
     Set(Key_c_g,       cmd_srch_abort_search);
+    Set(Key_left,      accept_search_left);
+    Set(Key_right,     accept_search_right);
     le_modes[LE_MODE_EMACS_SEARCH].keymap = t;
 
     le_modes[LE_MODE_CHAR_EXPECT].default_command = cmd_expect_char;
