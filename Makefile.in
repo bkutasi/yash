@@ -241,7 +241,7 @@ distcheck: dist
 		make -j4 check && make -j4 dist)
 	$(RM_DISTDIR)
 
-DISTFILES = $(SOURCES) $(SOURCES:.c=.d) $(HEADERS) README.md README.ja.md HISTORY-STORAGE.md cold-check.c yh-v5-pool-check.c COPYING INSTALL INSTALL.ja NEWS NEWS.ja THANKS configure Makefile.in install-sh makedeps.yash
+DISTFILES = $(SOURCES) $(SOURCES:.c=.d) $(HEADERS) README.md README.ja.md HISTORY-STORAGE.md cold-check.c yh-v5-pool-check.c .dockerignore Dockerfile.musl COPYING INSTALL INSTALL.ja NEWS NEWS.ja THANKS configure Makefile.in install-sh makedeps.yash
 distfiles: makedeps $(DISTFILES)
 copy-distfiles: distfiles
 	mkdir -p $(topdir)/$(DISTTARGETDIR)

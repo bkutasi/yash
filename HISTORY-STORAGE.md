@@ -30,6 +30,22 @@ the history pool is always enabled in this extraction. Defaults use a
 different codec and cache. Change flags only in a fresh build or after
 rebuilding all affected objects.
 
+## Static musl build
+
+With Docker and BuildKit, build the Alpine/musl binary and export its install
+tree to a new directory outside the source tree:
+
+```sh
+out=$(mktemp -d /tmp/yash-musl-output.XXXXXXXX)
+docker build -f Dockerfile.musl --output "type=local,dest=$out" .
+"$out/usr/local/bin/yash" --noprofile --norcfile -c 'echo $((6 * 7))'
+```
+
+The Docker build uses the flags above, static linking, and disables NLS and
+documentation. Its `.dockerignore` excludes host object files so they cannot
+be reused in the container. Keep the output outside the source tree to avoid
+overwriting source or existing build artifacts.
+
 ## Synthetic checks
 
 These checks use generated data, not personal history:
