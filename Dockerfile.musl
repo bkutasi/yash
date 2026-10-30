@@ -1,0 +1,19 @@
+ARG BASE_IMAGE=alpine:3.22
+FROM ${BASE_IMAGE} AS build
+
+RUN apk info -e build-base ncurses-dev ncurses-static zlib-dev zlib-static >/dev/null \
+    || apk add --no-cache build-base ncurses-dev ncurses-static zlib-dev zlib-static
+
+WORKDIR /source
+COPY . .
+
+ARG BUILD_JOBS=8
+RUN ./configure --disable-nls --disable-doc CC=gcc \
+      "CFLAGS=-std=c99 -Os -g -D_GNU_SOURCE -DYH_V5_POOL=1 -DYH_COLD_SHIFT=15 -DYH_COLD_CACHE=0 -DYH_COLD_ZLIB=1 -DYH_COLD_LEVEL=9" \
+      "LDFLAGS=-static" "LDLIBS=-ltinfo -lm -lz" \
+    && make -j"${BUILD_JOBS}" yash \
+    && ./yash --noprofile --norcfile -c 'test "$((6 * 7))" -eq 42' \
+    && make DESTDIR=/out install
+
+FROM scratch AS artifact
+COPY --from=build /out/ /
