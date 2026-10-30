@@ -45,6 +45,11 @@
 #include "sig.h"
 #include "strbuf.h"
 #include "util.h"
+#include "history.h"
+#include "yh-cold-store.h"
+#define YH_HIST_RELEASE(p) yh_hist_drop(((histentry_T *)(p))->value_id)
+#include "yh-history-pool.h"
+
 #include "variable.h"
 #include "yash.h"
 
@@ -216,14 +221,13 @@ histentry_T *new_entry(unsigned number, time_t time, const char *line)
     while (need_remove_entry(number))
         remove_entry(ashistentry(histlist.Oldest));
 
-    histentry_T *new = xmallocs(sizeof *new,
-            add(strlen(line), 1), sizeof *new->value);
+    histentry_T *new = yh_hist_alloc(sizeof *new);
     new->Prev = histlist.Newest;
     new->Next = Histlist;
     histlist.Newest = new->Prev->next = &new->link;
     new->number = number;
     new->time = time;
-    strcpy(new->value, line);
+    new->value_id = yh_hist_put(line);
 
     histlist.count++;
     assert(histlist.count <= histsize);
@@ -254,7 +258,7 @@ void remove_entry(histentry_T *entry)
     entry->Prev->next = entry->Next;
     entry->Next->prev = entry->Prev;
     histlist.count--;
-    free(entry);
+    yh_hist_free(entry);
 }
 
 /* Removes the newest entry. */
@@ -285,7 +289,7 @@ void clear_all_entries(void)
     histlink_T *l = histlist.Oldest;
     while (l != Histlist) {
         histlink_T *next = l->next;
-        free(ashistentry(l));
+        yh_hist_free(ashistentry(l));
         l = next;
     }
     histlist.Oldest = histlist.Newest = Histlist;
@@ -369,9 +373,11 @@ histlink_T *get_nth_newest_entry(unsigned n)
  * Returns `Histlist' if not found. */
 histlink_T *search_entry_by_prefix(const char *prefix)
 {
+    YH_HIST_SCOPE;
+
     histlink_T *l;
     for (l = histlist.Newest; l != Histlist; l = l->prev)
-        if (matchstrprefix(ashistentry(l)->value, prefix) != NULL)
+        if (matchstrprefix(yh_hist_value(ashistentry(l)), prefix) != NULL)
             break;
     return l;
 }
@@ -453,7 +459,7 @@ void remove_histfile_pid(pid_t pid)
 /* Clears `histfilepids'. */
 void clear_histfile_pids(void)
 {
-    free(histfilepids.pids);
+    yh_hist_free(histfilepids.pids);
     histfilepids = (struct pidlist_T) { 0, NULL, };
 }
 
@@ -519,7 +525,7 @@ FILE *open_histfile(void)
         return NULL;
 
     int fd = open(mbshistfile, O_RDWR | O_CREAT, S_IRUSR | S_IWUSR);
-    free(mbshistfile);
+    yh_hist_free(mbshistfile);
     if (fd < 0)
         return NULL;
 
@@ -684,7 +690,7 @@ void read_history_raw(void)
         char *line = malloc_wcstombs(buf.contents);
         if (line != NULL) {
             new_entry(next_history_number(), -1, line);
-            free(line);
+            yh_hist_free(line);
         }
         wb_clear(&buf);
     }
@@ -761,7 +767,7 @@ void parse_history_entry(const wchar_t *line)
     value = malloc_wcstombs(&end[1]);
     if (value != NULL) {
         new_entry((unsigned) num, time, value);
-        free(value);
+        yh_hist_free(value);
     }
 }
 
@@ -918,18 +924,20 @@ void write_signature(void)
  * `ferror' for the file. */
 void write_history_entry(const histentry_T *entry)
 {
+    YH_HIST_SCOPE;
+
     assert(histfile != NULL);
 
     /* don't print very long line */
-    if (xstrnlen(entry->value, LINE_MAX) >= LINE_MAX)
+    if (xstrnlen(yh_hist_value(entry), LINE_MAX) >= LINE_MAX)
         return;
 
     if (entry->time >= 0)
         wprintf_histfile(L"%X:%lX %s\n",
-                entry->number, (unsigned long) entry->time, entry->value);
+                entry->number, (unsigned long) entry->time, yh_hist_value(entry));
     else
         wprintf_histfile(L"%X %s\n",
-                entry->number, entry->value);
+                entry->number, yh_hist_value(entry));
     histfilelines++;
 }
 
@@ -1116,7 +1124,7 @@ void add_history_line(const wchar_t *line, size_t maxlen)
         entry = new_entry(next_history_number(), now, mbsline);
         if (histfile != NULL)
             write_history_entry(entry);
-        free(mbsline);
+        yh_hist_free(mbsline);
     }
 }
 
@@ -1125,11 +1133,13 @@ void add_history_line(const wchar_t *line, size_t maxlen)
  * `histfile' must be locked and `update_history' must have been called. */
 void remove_duplicates(const char *line)
 {
+    YH_HIST_SCOPE;
+
     histlink_T *l = histlist.Newest;
     for (unsigned i = histrmdup; i > 0 && l != Histlist; i--) {
         histlink_T *prev = l->prev;
         histentry_T *e = ashistentry(l);
-        if (strcmp(e->value, line) == 0) {
+        if (strcmp(yh_hist_value(e), line) == 0) {
             if (histfile != NULL) {
                 wprintf_histfile(L"d%X\n", e->number);
                 histfilelines++;
@@ -1431,7 +1441,7 @@ histlink_T *fc_search_entry_by_prefix(const wchar_t *prefix)
         return Histlist;
 
     histlink_T *l = search_entry_by_prefix(s);
-    free(s);
+    yh_hist_free(s);
     if (l == Histlist)
         xerror(0, Ngt("no such history entry beginning with `%ls'"), prefix);
     return l;
@@ -1444,6 +1454,8 @@ int fc_print_entries(
         FILE *f, const histentry_T *first, const histentry_T *last,
         bool reverse, enum fcprinttype_T type)
 {
+    YH_HIST_SCOPE;
+
     const histentry_T *start, *end, *e;
     if (!reverse)
         start = first, end = last;
@@ -1455,16 +1467,16 @@ int fc_print_entries(
         switch (type) {
             case FC_FULL:
                 r = fprintf(f, "%u\t%s\t%s\n",
-                        e->number, fc_time_to_str(e->time), e->value);
+                        e->number, fc_time_to_str(e->time), yh_hist_value(e));
                 break;
             case FC_NUMBERED:
-                r = fprintf(f, "%u\t%s\n", e->number, e->value);
+                r = fprintf(f, "%u\t%s\n", e->number, yh_hist_value(e));
                 break;
             case FC_UNNUMBERED:
-                r = fprintf(f, "\t%s\n", e->value);
+                r = fprintf(f, "\t%s\n", yh_hist_value(e));
                 break;
             case FC_RAW:
-                r = fprintf(f, "%s\n", e->value);
+                r = fprintf(f, "%s\n", yh_hist_value(e));
                 break;
             default:
                 UNREACHABLE();
@@ -1502,7 +1514,9 @@ const char *fc_time_to_str(time_t time)
 int fc_exec_entry(const histentry_T *entry,
         const wchar_t *old, const wchar_t *new, bool quiet)
 {
-    wchar_t *code = malloc_mbstowcs(entry->value);
+    YH_HIST_SCOPE;
+
+    wchar_t *code = malloc_mbstowcs(yh_hist_value(entry));
     if (code == NULL) {
         xerror(EILSEQ, Ngt("unexpected error"));
         return Exit_ERROR;
@@ -1523,7 +1537,7 @@ int fc_exec_entry(const histentry_T *entry,
     if (!quiet)
         printf("%ls\n", code);
     exec_wcs(code, "fc", false);
-    free(code);
+    yh_hist_free(code);
     return laststatus;
 }
 
@@ -1559,7 +1573,7 @@ int fc_edit_and_exec_entries(
         if (unlink(temp) < 0)
             xerror(errno, Ngt("failed to remove temporary file `%s'"), temp);
 error2:
-        free(temp);
+        yh_hist_free(temp);
 error1:
         return Exit_FAILURE;
     } else if (cpid > 0) {  // parent process
@@ -1584,7 +1598,7 @@ error1:
         }
         if (unlink(temp) < 0)
             xerror(errno, Ngt("failed to remove temporary file `%s'"), temp);
-        free(temp);
+        yh_hist_free(temp);
 
         if (fd < 0)
             return Exit_FAILURE;
@@ -1603,10 +1617,10 @@ error1:
 
         wchar_t *command = malloc_wprintf(L"%ls %s",
                 (editor != NULL) ? editor : L"${FCEDIT:-ed}", temp);
-        free(temp);
+        yh_hist_free(temp);
         exec_wcs(command, "fc", true);
 #ifndef NDEBUG
-        free(command);
+        yh_hist_free(command);
 #endif
         UNREACHABLE();
     }
@@ -1822,7 +1836,7 @@ int history_read(const wchar_t *s)
         if (mbsfilename == NULL)
             goto error;
         f = fopen(mbsfilename, "r");
-        free(mbsfilename);
+        yh_hist_free(mbsfilename);
     }
     if (f == NULL)
         goto error;
@@ -1853,7 +1867,7 @@ int history_write(const wchar_t *s)
         if (mbsfilename == NULL)
             goto error;
         f = fopen(mbsfilename, "w");
-        free(mbsfilename);
+        yh_hist_free(mbsfilename);
         if (f == NULL)
             goto error;
     }

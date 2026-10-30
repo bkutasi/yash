@@ -823,6 +823,8 @@ void update_right_prompt(void)
  * When this function returns, the cursor is left after the search line. */
 void print_search(void)
 {
+    YH_HIST_SCOPE;
+
     assert(le_search_buffer.contents != NULL);
 
     free(current_editline), current_editline = NULL;
@@ -834,7 +836,7 @@ void print_search(void)
     update_styler();
 
     if (le_search_result != Histlist)
-        lebuf_wprintf(true, L"%s", ashistentry(le_search_result)->value);
+        lebuf_wprintf(true, L"%s", yh_hist_value(ashistentry(le_search_result)));
     reset_style_before_moving();
     lebuf_print_nel();
     clear_to_end_of_screen(), candbaseline = -1;

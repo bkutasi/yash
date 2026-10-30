@@ -1,3 +1,4 @@
+#include <stdint.h>
 /* Yash: yet another shell */
 /* history.h: command history management */
 /* (C) 2007-2012 magicant */
@@ -34,10 +35,11 @@ typedef struct histlink_T {
 /* The structure type of history entries. */
 typedef struct histentry_T {
     histlink_T link;
-    unsigned number;
     time_t time;
-    char value[];
+    unsigned number;
+    uint32_t value_id;
 } histentry_T;
+#include "yh-cold-api.h"
 #define Prev link.prev
 #define Next link.next
 /* The value is stored as a multibyte string rather than a wide string to save
