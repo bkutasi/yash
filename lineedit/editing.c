@@ -203,7 +203,10 @@ static bool reset_completion;
 static bool next_reset_completion;
 
 /* Probability distribution tree for command prediction. */
-static trie_T *prediction_tree = NULL;
+#include "yh-predict.h"
+#include "yh-v4.h"
+#include "yh-v5-audit.h"
+static yh_v4_T *prediction_tree = NULL;
 
 
 static void reset_state(void);
@@ -387,7 +390,7 @@ wchar_t *le_editing_finalize(void)
     free(main_history_value);
 
     clear_prediction();
-    trie_destroy(prediction_tree), prediction_tree = NULL;
+    yh_v4_destroy(prediction_tree), prediction_tree = NULL;
     wb_wccat(&le_main_buffer, L'\n');
     return wb_towcs(&le_main_buffer);
 }
@@ -2513,7 +2516,7 @@ void check_reset_completion(void)
  * current history. The result is set to `prediction_tree'. */
 void create_prediction_tree(void)
 {
-    trie_T *t = trie_create();
+    yh_v4_T *t = yh_v4_create();
 #define N 4
     size_t hits[N] = {0};
     for (const histlink_T *l = Histlist; (l = l->prev) != Histlist; ) {
@@ -2528,11 +2531,12 @@ void create_prediction_tree(void)
         wchar_t *cmd = malloc_mbstowcs(e->value);
         if (cmd == NULL)
             continue;
-        t = trie_add_probability(t, cmd, 1.0 / (hits[k] + 1));
+        t = yh_v4_add(t, cmd, 1.0 / (hits[k] + 1));
         free(cmd);
     }
 
-    prediction_tree = t;
+    prediction_tree = yh_v4_finish(t);
+    yh_v5_audit(prediction_tree);
 }
 
 // Counts N-1 at most
@@ -2583,7 +2587,7 @@ void update_buffer_with_prediction(void)
 
     le_main_length = le_main_buffer.length;
 
-    wchar_t *suffix = trie_probable_key(
+    wchar_t *suffix = yh_v4_predict(
             prediction_tree, le_main_buffer.contents);
     wb_catfree(&le_main_buffer, suffix);
 }
