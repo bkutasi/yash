@@ -45,7 +45,7 @@ typedef struct trienode_T {
 } trienode_T;
 
 
-#define RAISE_COUNT(count) ((count) | 3)
+#define RAISE_COUNT(count) (count)
 
 static inline bool isempty(const trienode_T *node)
     __attribute__((nonnull,pure));
