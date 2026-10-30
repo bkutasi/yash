@@ -1,34 +1,25 @@
 ## About this fork
 
-This is my experimental fork of [Yash](https://github.com/magicant/yash).
+This is my experimental fork of Yash.
 I'm exploring ways to use less memory for shell history and command
 prediction, especially when running many shells. The `dogfood` branch brings
 the experiments together:
 
-* **Less memory for history:** pooled entries and compressed older commands,
-  with the existing history file format preserved.
-* **Lighter predictions:** a compact prediction tree with less unused
-  allocation.
-* **Easier-to-read commands:** syntax highlighting as you edit.
-* **Faster history edits:** reverse search puts the cursor at the match.
-* **Portable build option:** a Docker build for a statically linked musl
-  package.
+Less memory for history: pooled entries and compressed older commands, with
+the existing history file format preserved. Lighter predictions: a compact
+prediction tree with less unused allocation. Syntax highlighting as you edit.
+Reverse search puts the cursor at the match. Docker build for a statically
+linked musl package.
 
-### What the memory benchmark showed
+### Gains
 
 In a repeated benchmark with 100 shells and 23,337 history entries, the
-memory-saving build averaged **233.26 MiB summed RSS**, compared with
-**336.37 MiB** for the V5 baseline: about **30.7% less**. Summed PSS,
-which accounts for shared pages, was **180.62 MiB** versus **289.88 MiB**.
-The trade-off was slower repeated prompts: p95 was **17.84 ms** versus
-**11.69 ms** for the initial baseline.
+memory-saving build averaged ~230 MiB summed RSS, compared with
+~336 MiB for the baseline. The trade-off was slower repeated prompts:
+p95 was 17.84 ms versus 11.69 ms for the initial baseline.
 
-This is a controlled workload, not a promise for every real-world setup or a
-comparison with upstream Yash or another shell. Savings depend on history,
-usage, and build settings; summed RSS also counts shared pages more than once.
-
-These changes are a work in progress, not an official Yash release. The
-memory-saving build requires specific configuration flags. See
+These changes are a work in progress. The memory-saving build requires
+specific configuration flags. See
 [MEMORY-FORK.md](MEMORY-FORK.md) for build instructions, benchmark details,
 and limitations. The upstream README follows below.
 
