@@ -1,3 +1,17 @@
+## About this fork
+
+This is my experimental fork of [Yash](https://github.com/magicant/yash).
+I'm exploring ways to use less memory for shell history and command
+prediction, especially when running many shells. It also includes syntax
+highlighting and some line-editing improvements, including a more useful
+cursor position during reverse history search.
+
+These changes are a work in progress, not an official Yash release. Memory
+savings and performance depend on your workload, and the memory-saving build
+requires specific configuration flags. The history file format remains
+unchanged. See [MEMORY-FORK.md](MEMORY-FORK.md) for build instructions,
+benchmark results, and limitations. The upstream README follows below.
+
 Yash: yet another shell
 =======================
 
