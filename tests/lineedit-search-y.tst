@@ -20,6 +20,14 @@ test_OE -e 0 'search right accepts and moves from match' \
     -c 'exec python3 "$@"' yash "${abs_test_file%/*}/lineedit-search-pty.py" "$testee" right
 __IN__
 
+test_OE -e 0 'prediction allows incremental arrow navigation and End' \
+    -c 'exec python3 "$@"' yash "${abs_test_file%/*}/lineedit-search-pty.py" "$testee" prediction-navigation
+__IN__
+
+test_OE -e 0 'Tab completes a filename while editing' \
+    -c 'exec python3 "$@"' yash "${abs_test_file%/*}/lineedit-search-pty.py" "$testee" tab-completion
+__IN__
+
 test_OE -e 0 'repeated search updates the match cursor' \
     -c 'exec python3 "$@"' yash "${abs_test_file%/*}/lineedit-search-pty.py" "$testee" repeat
 __IN__

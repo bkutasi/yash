@@ -293,6 +293,26 @@ def run(executable, scenario):
             session.assert_cursor(session.checkpoint(action), entry, offset)
             changed = entry[:offset] + "X" + entry[offset:]
             session.assert_cursor(session.checkpoint(b"X"), changed, offset + 1)
+        elif scenario == "prediction-navigation":
+            entry = ": alpha beta gamma"
+            session.history(entry)
+            session.history("set -o lepredict")
+            session.assert_cursor(session.checkpoint(b": alpha"), entry, 7)
+            session.assert_cursor(session.checkpoint(session.right), entry, 8)
+            session.assert_cursor(session.checkpoint(session.left), entry, 7)
+            session.assert_cursor(session.checkpoint(session.right), entry, 8)
+            session.assert_cursor(session.checkpoint(curses.tigetstr("kend")),
+                                  entry, len(entry))
+            session.assert_cursor(session.checkpoint(session.left), entry, len(entry) - 1)
+            changed = entry[:-1] + "X" + entry[-1]
+            session.assert_cursor(session.checkpoint(b"X"), changed, len(entry))
+        elif scenario == "tab-completion":
+            path = os.path.join(session.temp.name, "completion-target")
+            with open(path, "w", encoding="utf-8"):
+                pass
+            line = ": " + path + " "
+            session.assert_cursor(session.checkpoint((": " + path[:-6]).encode() + b"\t"),
+                                  line, len(line))
         elif scenario == "wide-wrap":
             entry = ": 123456界tail"
             match = entry.index("界")
